@@ -11,7 +11,7 @@ from platform_constants import default_constants as platformConstantsDict
 
 here = os.path.dirname(os.path.abspath(__file__))
 class SDOT:
-    def __init__(self, constantsDict, X, Y, devnum = 0, DEBUG = True):
+    def __init__(self, constantsDict, X, Y, devnum = 0, DEBUG = False, buffType = "float64_t"):
          
         if np.shape(X)[-1] != np.shape(Y)[0]:
             raise Exception("Last dimension of X must match first dimension of Y")
@@ -23,7 +23,7 @@ class SDOT:
         }
         
         # device selection and instantiation
-        self.instance_inst = Instance()
+        self.instance_inst = Instance(verbose=False)
         self.device = self.instance_inst.getDevice(devnum)
         self.constantsDict = constantsDict
         shader_basename = "sdot"
@@ -32,16 +32,17 @@ class SDOT:
             "XDIM1": "n",
         }
         
-        shaderInputBuffers=[]
+        shaderInputBuffers=[
+            {"name": "X", "type": buffType, "dims": ["XDIM0", "XDIM1"]},
+            {"name": "Y", "type": buffType, "dims": ["YDIM0"]},
+        ]
         shaderInputBuffersNoDebug=[
         ]
         debuggableVars=[
-            {"name": "thisAdd", "type": "float64_t", "dims": ["XDIM0", "XDIM1"]},
+            {"name": "thisAdd", "type": buffType, "dims": ["XDIM0", "XDIM1"]},
         ]
         shaderOutputBuffers=[
-            {"name": "X", "type": "float64_t", "dims": ["XDIM0", "XDIM1"]},
-            {"name": "Y", "type": "float64_t", "dims": ["YDIM0"]},
-            {"name": "Z", "type": "float64_t", "dims": ["XDIM0"]},
+            {"name": "Z", "type": buffType, "dims": ["XDIM0"]},
         ]
 
         # Compute Stage: the only stage
@@ -65,6 +66,7 @@ class SDOT:
             computeShader=self.computeShader,
             device=self.device,
             constantsDict=self.constantsDict,
+            workgroupShape=[128, 1, 1],
         )
     
     def run(self):
@@ -75,8 +77,8 @@ import time
 
 if __name__ == "__main__":
     
-    X = np.random.random((10000,10000))
-    Y = np.random.random((10000))
+    X = np.random.random((1000,1000))
+    Y = np.random.random((1000))
     
     platformConstantsDict["XDIM0"] = np.shape(X)[0]
     platformConstantsDict["XDIM1"] = np.shape(X)[1]

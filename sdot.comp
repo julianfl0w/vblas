@@ -12,21 +12,17 @@
 #define YDIM0 10000
  // This will be (or has been) replaced by constant definitions
 layout (local_size_x = LOCAL_X, local_size_y = LOCAL_Y, local_size_z = LOCAL_Z ) in;
-layout(std430, set = 0, binding = 0) buffer X_buf
-{
-   float64_t X[100000000];
-};
-layout(std430, set = 0, binding = 1) buffer Y_buf
-{
-   float64_t Y[10000];
-};
-layout(std430, set = 0, binding = 2) buffer Z_buf
+layout(std430, set = 0, binding = 0) buffer Z_buf
 {
    float64_t Z[10000];
 };
-layout(std430, set = 0, binding = 3) buffer thisAdd_buf
+layout(std140, set = 1, binding = 0) uniform X_buf
 {
-   float64_t thisAdd[100000000];
+   float64_t X[200000000];
+};
+layout(std140, set = 1, binding = 1) uniform Y_buf
+{
+   float64_t Y[20000];
 };
   // This will be (or has been) replaced by buffer definitions
     
@@ -43,19 +39,25 @@ void main() {
     //uint sampleNo = gl_LocalInvocationID.x;
     //uint shaderIndexInSample = gl_LocalInvocationID.y;
     //uint zindex = gl_LocalInvocationID.z;
+    float64_t thisAdd = 0;
+
     
     //uint globalIndex = gl_LocalInvocationIndex;
-    uint globalIndex = gl_LocalInvocationID.x*LOCAL_Y + gl_LocalInvocationID.y;
+    //uint workgroupNo    = gl_GlobalInvocationID;
+    uint workgroupNo    = gl_WorkGroupID.x;
+    uint localSize      = LOCAL_X*LOCAL_Y*LOCAL_Z;
+    uint workgroupCount = gl_NumWorkGroups.x;
+    uint localIndex     = gl_LocalInvocationID.x*LOCAL_Y + gl_LocalInvocationID.y;
+    uint globalIndex    = workgroupNo*localSize + localIndex;
+    uint globalSize     = localSize*workgroupCount;
     
     // assume workgroup size 1
-    //uint workgroupSize    = LOCAL_X*LOCAL_Y*LOCAL_Z;
-    //uint workgroupNo      = gl_GlobalInvocationID;
     //uint globalIndex      = workgroupNo*workgroupSize + indexInWorkgroup;
     
     // now break the problem into workgroupSize parts 
     // (for max compatibility, 32x16 = 512
     
-    uint wPerShader = uint(XDIM0 / (LOCAL_X * LOCAL_Y)) + 1;
+    uint wPerShader = uint(XDIM0 / globalSize) + 1;
     
     float64_t sum = 0;
     // assume X array is 2 dimensions, Y array is 1d
@@ -72,8 +74,8 @@ void main() {
         sum = 0;
         for(uint n = 0; n < XDIM1; n++){
             uint nx =startN + n;
-            thisAdd[w*XDIM1+n] = X[nx] * Y[n];
-            sum += thisAdd[w*XDIM1+n];
+            thisAdd = X[nx] * Y[n];
+            sum += thisAdd;
         }
 
         Z[w] = sum;

@@ -20,19 +20,24 @@ void main() {
     //uint sampleNo = gl_LocalInvocationID.x;
     //uint shaderIndexInSample = gl_LocalInvocationID.y;
     //uint zindex = gl_LocalInvocationID.z;
+    VARIABLEDECLARATIONS
     
     //uint globalIndex = gl_LocalInvocationIndex;
-    uint globalIndex = gl_LocalInvocationID.x*LOCAL_Y + gl_LocalInvocationID.y;
+    //uint workgroupNo    = gl_GlobalInvocationID;
+    uint workgroupNo    = gl_WorkGroupID.x;
+    uint localSize      = LOCAL_X*LOCAL_Y*LOCAL_Z;
+    uint workgroupCount = gl_NumWorkGroups.x;
+    uint localIndex     = gl_LocalInvocationID.x*LOCAL_Y + gl_LocalInvocationID.y;
+    uint globalIndex    = workgroupNo*localSize + localIndex;
+    uint globalSize     = localSize*workgroupCount;
     
     // assume workgroup size 1
-    //uint workgroupSize    = LOCAL_X*LOCAL_Y*LOCAL_Z;
-    //uint workgroupNo      = gl_GlobalInvocationID;
     //uint globalIndex      = workgroupNo*workgroupSize + indexInWorkgroup;
     
     // now break the problem into workgroupSize parts 
     // (for max compatibility, 32x16 = 512
     
-    uint wPerShader = uint(XDIM0 / (LOCAL_X * LOCAL_Y)) + 1;
+    uint wPerShader = uint(XDIM0 / globalSize) + 1;
     
     float64_t sum = 0;
     // assume X array is 2 dimensions, Y array is 1d
