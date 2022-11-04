@@ -7,22 +7,23 @@
 #define LOCAL_X 32
 #define LOCAL_Y 16
 #define LOCAL_Z 1
-#define XDIM0 10000
-#define XDIM1 10000
-#define YDIM0 10000
+#define PROCTYPE float
+#define XDIM0 512
+#define XDIM1 8192
+#define YDIM0 8192
  // This will be (or has been) replaced by constant definitions
 layout (local_size_x = LOCAL_X, local_size_y = LOCAL_Y, local_size_z = LOCAL_Z ) in;
 layout(std430, set = 0, binding = 0) buffer Z_buf
 {
-   float64_t Z[10000];
+   float64_t Z[512];
 };
-layout(std140, set = 1, binding = 0) uniform X_buf
+layout(std430, set = 0, binding = 1) buffer X_buf
 {
-   float64_t X[200000000];
+   float64_t X[4194304];
 };
-layout(std140, set = 1, binding = 1) uniform Y_buf
+layout(std430, set = 0, binding = 2) buffer Y_buf
 {
-   float64_t Y[20000];
+   float64_t Y[8192];
 };
   // This will be (or has been) replaced by buffer definitions
     
@@ -59,7 +60,7 @@ void main() {
     
     uint wPerShader = uint(XDIM0 / globalSize) + 1;
     
-    float64_t sum = 0;
+    PROCTYPE sum = 0;
     // assume X array is 2 dimensions, Y array is 1d
     // x array, b dimension is the same as y array, 
     uint startW = globalIndex*wPerShader;

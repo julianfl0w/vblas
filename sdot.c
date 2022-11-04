@@ -39,7 +39,7 @@ void main() {
     
     uint wPerShader = uint(XDIM0 / globalSize) + 1;
     
-    float64_t sum = 0;
+    PROCTYPE sum = 0;
     // assume X array is 2 dimensions, Y array is 1d
     // x array, b dimension is the same as y array, 
     uint startW = globalIndex*wPerShader;
