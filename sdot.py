@@ -15,7 +15,19 @@ here = os.path.dirname(os.path.abspath(__file__))
 
 class SDOT(ComputeShader):
     def __init__(
-        self, constantsDict, instance, device, X, Y, devnum=0, DEBUG=False, buffType="float64_t"
+        self,
+        constantsDict,
+        instance,
+        device,
+        X,
+        Y,
+        devnum=0,
+        DEBUG=False,
+        buffType="float64_t",
+        memProperties=0
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
     ):
 
         constantsDict["PROCTYPE"] = buffType
@@ -33,8 +45,8 @@ class SDOT(ComputeShader):
         }
 
         # device selection and instantiation
-        self.instance_inst = instance 
-        self.device = device          
+        self.instance_inst = instance
+        self.device = device
         self.constantsDict = constantsDict
         shader_basename = "sdot"
         self.dim2index = {"XDIM0": "w", "XDIM1": "n"}
@@ -65,6 +77,7 @@ class SDOT(ComputeShader):
             shaderOutputBuffers=shaderOutputBuffers,
             DEBUG=DEBUG,
             dim2index=self.dim2index,
+            memProperties=memProperties,
         )
 
     def debugRun(self):
@@ -72,46 +85,80 @@ class SDOT(ComputeShader):
         self.run()
         vlen = time.time() - vstart
         print("vlen " + str(vlen))
-        return s.Z.getAsNumpyArray()
-        
+        return self.Z.getAsNumpyArray()
 
 
 import time
 
-if __name__ == "__main__":
 
+def numpyTest(X, Y):
+
+    # get numpy time, for comparison
+    print("--- RUNNING NUMPY TEST ---")
+    for i in range(10):
+        nstart = time.time()
+        nval = np.dot(X, Y)
+        nlen = time.time() - nstart
+        print("nlen " + str(nlen))
+    return nval
+
+
+def floatTest(X, Y, instance, expectation):
+
+    print("--- RUNNING FLOAT TEST ---")
     devnum = 0
-    instance = Instance(verbose=False)
-    device   = instance.getDevice(devnum)
+    device = instance.getDevice(devnum)
+    s = SDOT(
+        platformConstantsDict,
+        instance=instance,
+        device=device,
+        X=X.astype(np.float32),
+        Y=Y.astype(np.float32),
+        buffType="float",
+        memProperties=0 | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        # | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    )
+    s.X.setBuffer(X)
+    s.Y.setBuffer(Y)
+    for i in range(10):
+        vval = s.debugRun()
+    print(np.allclose(expectation, vval))
+    device.release()
+
+
+def float64Test(X, Y, instance, expectation):
+
+    print("--- RUNNING FLOAT64_T TEST ---")
+    devnum = 0
+    device = instance.getDevice(devnum)
+    s = SDOT(
+        platformConstantsDict,
+        instance=instance,
+        device=device,
+        X=X,
+        Y=Y,
+        buffType="float64_t",
+        memProperties=0
+        | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    )
+    s.X.setBuffer(X)
+    s.Y.setBuffer(Y)
+    for i in range(10):
+        vval = s.debugRun()
+    print(np.allclose(expectation, vval))
+    device.release()
+
+
+if __name__ == "__main__":
 
     X = np.random.random((512, 2 ** 13))
     Y = np.random.random((2 ** 13))
-    
-    # get numpy time, for comparison
-    nstart = time.time()
-    nval = np.dot(X, Y)
-    nlen = time.time() - nstart
-    print("nlen " + str(nlen))
-    
-    print("--- RUNNING FLOAT TEST ---")
-    s = SDOT(platformConstantsDict, instance=instance, device=device, X=X.astype(np.float32), Y=Y.astype(np.float32), buffType="float")
-    s.X.setBuffer(X)
-    s.Y.setBuffer(Y)
-    for i in range(10):
-        vval = s.debugRun()
-    print(np.allclose(nval, vval))
-    device.release()
-    device   = instance.getDevice(devnum)
-    
-    
-    print("--- RUNNING FLOAT64_T TEST ---")
-    s = SDOT(platformConstantsDict, instance=instance, device=device, X=X, Y=Y, buffType="float64_t")
-    s.X.setBuffer(X)
-    s.Y.setBuffer(Y)
-    for i in range(10):
-        vval = s.debugRun()
-    print(np.allclose(nval, vval))
-    device.release()
-    device   = instance.getDevice(devnum)
-    
-    
+
+    # begin GPU test
+    instance = Instance(verbose=False)
+    nval = numpyTest(X, Y)
+    floatTest(X, Y, instance, expectation=nval)
+    float64Test(X, Y, instance, expectation=nval)

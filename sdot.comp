@@ -7,7 +7,7 @@
 #define LOCAL_X 32
 #define LOCAL_Y 16
 #define LOCAL_Z 1
-#define PROCTYPE float64_t
+#define PROCTYPE float
 #define XDIM0 512
 #define XDIM1 8192
 #define YDIM0 8192
@@ -15,15 +15,15 @@
 layout (local_size_x = LOCAL_X, local_size_y = LOCAL_Y, local_size_z = LOCAL_Z ) in;
 layout(std430, set = 0, binding = 0) buffer Z_buf
 {
-   float64_t Z[512];
+   float Z[512];
 };
 layout(std430, set = 0, binding = 1) buffer X_buf
 {
-   float64_t X[4194304];
+   float X[4194304];
 };
 layout(std430, set = 0, binding = 2) buffer Y_buf
 {
-   float64_t Y[8192];
+   float Y[8192];
 };
   // This will be (or has been) replaced by buffer definitions
     
@@ -40,7 +40,7 @@ void main() {
     //uint sampleNo = gl_LocalInvocationID.x;
     //uint shaderIndexInSample = gl_LocalInvocationID.y;
     //uint zindex = gl_LocalInvocationID.z;
-    float64_t thisAdd = 0;
+    float thisAdd = 0;
 
     
     //uint globalIndex = gl_LocalInvocationIndex;
@@ -58,23 +58,23 @@ void main() {
     // now break the problem into workgroupSize parts 
     // (for max compatibility, 32x16 = 512
     
-    uint wPerShader = uint(XDIM0 / globalSize) + 1;
+    uint nPerShader = uint(XDIM1 / globalSize) + 1;
     
     PROCTYPE sum = 0;
     // assume X array is 2 dimensions, Y array is 1d
     // x array, b dimension is the same as y array, 
-    uint startW = globalIndex*wPerShader;
-    uint endW   = (globalIndex+1)*wPerShader;
+    uint startN = globalIndex*nPerShader;
+    uint endN   = (globalIndex+1)*nPerShader;
     
-    for(uint w = startW; w < endW; w++){
+    for(uint n = startN; n < endN; n++){
         //Z[w] = vectordot(X+w*XDIM1, Y, XDIM1);
         
-        if(w >= XDIM0)
+        if(n >= XDIM1)
             break;
-        uint startN = w*XDIM1;
+        uint startW = n*XDIM0;
         sum = 0;
-        for(uint n = 0; n < XDIM1; n++){
-            uint nx =startN + n;
+        for(uint w = 0; w < XDIM0; w++){
+            uint nx =startW + n;
             thisAdd = X[nx] * Y[n];
             sum += thisAdd;
         }
