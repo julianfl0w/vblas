@@ -17,6 +17,9 @@ BUFFERS_STRING  // This will be (or has been) replaced by buffer definitions
 //}
 
 void main() {
+    //precision mediump float;
+    //precision mediump float64_t;
+
     //uint sampleNo = gl_LocalInvocationID.x;
     //uint shaderIndexInSample = gl_LocalInvocationID.y;
     //uint zindex = gl_LocalInvocationID.z;
@@ -52,11 +55,18 @@ void main() {
             break;
         uint startN = w*XDIM1;
         sum = 0;
+        
         for(uint n = 0; n < XDIM1; n++){
             uint nx =startN + n;
-            thisAdd = X[nx] * Y[n];
+            PROCTYPE x;
+            x = X[nx];
+            //x = sin(n);
+            //x = n;
+            thisAdd = x * Y[n];
             sum += thisAdd;
         }
+        
+        //sum = dot(X, Y);
 
         Z[w] = sum;
     }

@@ -7,23 +7,23 @@
 #define LOCAL_X 32
 #define LOCAL_Y 16
 #define LOCAL_Z 1
-#define PROCTYPE float
+#define PROCTYPE float64_t
 #define XDIM0 512
 #define XDIM1 8192
 #define YDIM0 8192
  // This will be (or has been) replaced by constant definitions
 layout (local_size_x = LOCAL_X, local_size_y = LOCAL_Y, local_size_z = LOCAL_Z ) in;
-layout(std430, set = 0, binding = 0) buffer Z_buf
+layout(std140, set = 0, binding = 0) buffer Z_buf
 {
-   float Z[512];
+   float64_t Z[1024];
 };
-layout(std430, set = 0, binding = 1) buffer X_buf
+layout(std140, set = 0, binding = 1) buffer X_buf
 {
-   float X[4194304];
+   float64_t X[8388608];
 };
-layout(std430, set = 0, binding = 2) buffer Y_buf
+layout(std140, set = 0, binding = 2) buffer Y_buf
 {
-   float Y[8192];
+   float64_t Y[16384];
 };
   // This will be (or has been) replaced by buffer definitions
     
@@ -37,10 +37,13 @@ layout(std430, set = 0, binding = 2) buffer Y_buf
 //}
 
 void main() {
+    //precision mediump float;
+    //precision mediump float64_t;
+
     //uint sampleNo = gl_LocalInvocationID.x;
     //uint shaderIndexInSample = gl_LocalInvocationID.y;
     //uint zindex = gl_LocalInvocationID.z;
-    float thisAdd = 0;
+    float64_t thisAdd = 0;
 
     
     //uint globalIndex = gl_LocalInvocationIndex;
@@ -58,26 +61,33 @@ void main() {
     // now break the problem into workgroupSize parts 
     // (for max compatibility, 32x16 = 512
     
-    uint nPerShader = uint(XDIM1 / globalSize) + 1;
+    uint wPerShader = uint(XDIM0 / globalSize) + 1;
     
     PROCTYPE sum = 0;
     // assume X array is 2 dimensions, Y array is 1d
     // x array, b dimension is the same as y array, 
-    uint startN = globalIndex*nPerShader;
-    uint endN   = (globalIndex+1)*nPerShader;
+    uint startW = globalIndex*wPerShader;
+    uint endW   = (globalIndex+1)*wPerShader;
     
-    for(uint n = startN; n < endN; n++){
+    for(uint w = startW; w < endW; w++){
         //Z[w] = vectordot(X+w*XDIM1, Y, XDIM1);
         
-        if(n >= XDIM1)
+        if(w >= XDIM0)
             break;
-        uint startW = n*XDIM0;
+        uint startN = w*XDIM1;
         sum = 0;
-        for(uint w = 0; w < XDIM0; w++){
-            uint nx =startW + n;
-            thisAdd = X[nx] * Y[n];
+        
+        for(uint n = 0; n < XDIM1; n++){
+            uint nx =startN + n;
+            PROCTYPE x;
+            x = X[nx];
+            //x = sin(n);
+            //x = n;
+            thisAdd = x * Y[n];
             sum += thisAdd;
         }
+        
+        //sum = dot(X, Y);
 
         Z[w] = sum;
     }

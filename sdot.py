@@ -51,7 +51,8 @@ class SDOT(ComputeShader):
         shader_basename = "sdot"
         self.dim2index = {"XDIM0": "w", "XDIM1": "n"}
 
-        shaderInputBuffers = []
+        shaderInputBuffers = [
+        ]
         shaderInputBuffersNoDebug = []
         debuggableVars = [
             {"name": "thisAdd", "type": buffType, "dims": ["XDIM0", "XDIM1"]}
@@ -78,6 +79,8 @@ class SDOT(ComputeShader):
             DEBUG=DEBUG,
             dim2index=self.dim2index,
             memProperties=memProperties,
+            workgroupShape=[1, 1, 1],
+            compressBuffers=False,
         )
 
     def debugRun(self):
@@ -125,6 +128,8 @@ def floatTest(X, Y, instance, expectation):
         vval = s.debugRun()
     print(np.allclose(expectation, vval))
     device.release()
+    print(nval)
+    print(vval)
 
 
 def float64Test(X, Y, instance, expectation):
@@ -154,8 +159,10 @@ def float64Test(X, Y, instance, expectation):
 
 if __name__ == "__main__":
 
-    X = np.random.random((512, 2 ** 13))
-    Y = np.random.random((2 ** 13))
+    signalLen = 2 ** 13
+    wcount = 512
+    X = np.random.random((wcount, signalLen))
+    Y = np.random.random((signalLen))
 
     # begin GPU test
     instance = Instance(verbose=False)
