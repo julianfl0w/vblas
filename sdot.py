@@ -80,7 +80,7 @@ class SDOT(ComputeShader):
             dim2index=self.dim2index,
             memProperties=memProperties,
             workgroupShape=[1, 1, 1],
-            compressBuffers=False,
+            compressBuffers=True,
         )
 
     def debugRun(self):

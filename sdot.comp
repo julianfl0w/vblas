@@ -13,17 +13,17 @@
 #define YDIM0 8192
  // This will be (or has been) replaced by constant definitions
 layout (local_size_x = LOCAL_X, local_size_y = LOCAL_Y, local_size_z = LOCAL_Z ) in;
-layout(std140, set = 0, binding = 0) buffer Z_buf
+layout(std430, set = 0, binding = 0) buffer Z_buf
 {
-   float64_t Z[1024];
+   float64_t Z[512];
 };
-layout(std140, set = 0, binding = 1) buffer X_buf
+layout(std430, set = 0, binding = 1) buffer X_buf
 {
-   float64_t X[8388608];
+   float64_t X[4194304];
 };
-layout(std140, set = 0, binding = 2) buffer Y_buf
+layout(std430, set = 0, binding = 2) buffer Y_buf
 {
-   float64_t Y[16384];
+   float64_t Y[8192];
 };
   // This will be (or has been) replaced by buffer definitions
     
