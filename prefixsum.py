@@ -13,14 +13,13 @@ from platform_constants import default_constants as platformConstantsDict
 here = os.path.dirname(os.path.abspath(__file__))
 
 
-class SDOT(ComputeShader):
+class PREFIX_SUM(ComputeShader):
     def __init__(
         self,
         constantsDict,
         instance,
         device,
         X,
-        Y,
         devnum=0,
         DEBUG=False,
         buffType="float64_t",
@@ -32,24 +31,22 @@ class SDOT(ComputeShader):
 
         constantsDict["PROCTYPE"] = buffType
         constantsDict["XDIM0"] = np.shape(X)[0]
-        constantsDict["XDIM1"] = np.shape(X)[1]
-        constantsDict["YDIM0"] = np.shape(Y)[0]
-
-        if np.shape(X)[-1] != np.shape(Y)[0]:
-            raise Exception("Last dimension of X must match first dimension of Y")
-
+        constantsDict["LG_WG_SIZE"] = 9 # corresponding to 512 threads per NVIDIA SIMD
+        constantsDict["SHADERS_PER_LOCALGROUP"] = (1 << constantsDict["LG_WG_SIZE"])
+        constantsDict["SHADER_COUNT"] = 512
+        constantsDict["OPS_PER_SHADER"] = 1
+        
         self.dim2index = {
             "XDIM0": np.shape(X)[0],
-            "XDIM1": np.shape(X)[1],
-            "YDIM0": np.shape(Y)[0],
+            "SHADER_COUNT": constantsDict["SHADER_COUNT"],
         }
 
         # device selection and instantiation
         self.instance_inst = instance
         self.device = device
         self.constantsDict = constantsDict
-        shader_basename = "sdot"
-        self.dim2index = {"XDIM0": "w", "XDIM1": "n"}
+        shader_basename = "shaders/prefix"
+
 
         shaderInputBuffers = [
         ]
@@ -58,15 +55,18 @@ class SDOT(ComputeShader):
             {"name": "thisAdd", "type": buffType, "dims": ["XDIM0", "XDIM1"]}
         ]
         shaderOutputBuffers = [
-            {"name": "Z", "type": buffType, "dims": ["XDIM0"]},
-            {"name": "X", "type": buffType, "dims": ["XDIM0", "XDIM1"]},
-            {"name": "Y", "type": buffType, "dims": ["YDIM0"]},
+            {"name": "inbuf", "type": buffType, "dims": ["XDIM0"]},
+            {"name": "outbuf", "type": buffType, "dims": ["XDIM0"]},
+            {"name": "part_counter", "type": "uint", "dims": ["SHADER_COUNT"]},
+            {"name": "localGroup_flag", "type": "uint", "dims": ["SHADER_COUNT"]},
+            {"name": "aggregate", "type": buffType, "dims": ["SHADER_COUNT"]},
+            {"name": "prefix", "type": buffType, "dims": ["SHADER_COUNT"]},
         ]
 
         # Compute Stage: the only stage
         ComputeShader.__init__(
             self,
-            sourceFilename=os.path.join(here, "sdot.c"),  # can be GLSL or SPIRV
+            sourceFilename=os.path.join(here, "shaders/prefix.c"),  # can be GLSL or SPIRV
             parent=self.instance_inst,
             constantsDict=self.constantsDict,
             device=self.device,
@@ -84,6 +84,10 @@ class SDOT(ComputeShader):
         )
 
     def debugRun(self):
+        self.aggregate.zeroInitialize()
+        self.prefix.zeroInitialize()
+        self.flag.zeroInitialize()
+        self.part_counter.zeroInitialize()
         vstart = time.time()
         self.run()
         vlen = time.time() - vstart
@@ -94,61 +98,57 @@ class SDOT(ComputeShader):
 import time
 
 
-def numpyTest(X, Y):
+def numpyTest(X):
 
     # get numpy time, for comparison
     print("--- RUNNING NUMPY TEST ---")
     for i in range(10):
         nstart = time.time()
-        nval = np.dot(X, Y)
+        nval = np.sum(X)
         nlen = time.time() - nstart
         print("nlen " + str(nlen))
     return nval
 
 
-def floatTest(X, Y, instance, expectation):
+def floatTest(X, instance, expectation):
 
     print("--- RUNNING FLOAT TEST ---")
     devnum = 0
     device = instance.getDevice(devnum)
-    s = SDOT(
+    s = PREFIX_SUM(
         platformConstantsDict,
         instance=instance,
         device=device,
         X=X.astype(np.float32),
-        Y=Y.astype(np.float32),
         buffType="float",
         memProperties=0 | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
         # | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     )
-    s.X.setBuffer(X)
-    s.Y.setBuffer(Y)
+    s.inbuf.setBuffer(X)
     for i in range(10):
         vval = s.debugRun()
     print(np.allclose(expectation, vval))
     device.release()
 
 
-def float64Test(X, Y, instance, expectation):
+def float64Test(X, instance, expectation):
 
     print("--- RUNNING FLOAT64_T TEST ---")
     devnum = 0
     device = instance.getDevice(devnum)
-    s = SDOT(
+    s = PREFIX_SUM(
         platformConstantsDict,
         instance=instance,
         device=device,
         X=X,
-        Y=Y,
         buffType="float64_t",
         memProperties=0
         | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     )
-    s.X.setBuffer(X)
-    s.Y.setBuffer(Y)
+    s.inbuf.setBuffer(X)
     for i in range(10):
         vval = s.debugRun()
     print(np.allclose(expectation, vval))
@@ -164,6 +164,6 @@ if __name__ == "__main__":
 
     # begin GPU test
     instance = Instance(verbose=False)
-    nval = numpyTest(X, Y)
-    floatTest(X, Y, instance, expectation=nval)
-    float64Test(X, Y, instance, expectation=nval)
+    nval = numpyTest(X)
+    floatTest(X, instance, expectation=nval)
+    float64Test(X, instance, expectation=nval)

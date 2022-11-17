@@ -13,7 +13,7 @@ from platform_constants import default_constants as platformConstantsDict
 here = os.path.dirname(os.path.abspath(__file__))
 
 
-class SDOT(ComputeShader):
+class ADD(ComputeShader):
     def __init__(
         self,
         constantsDict,
@@ -31,43 +31,36 @@ class SDOT(ComputeShader):
     ):
 
         constantsDict["PROCTYPE"] = buffType
-        constantsDict["XDIM0"] = np.shape(X)[0]
-        constantsDict["XDIM1"] = np.shape(X)[1]
-        constantsDict["YDIM0"] = np.shape(Y)[0]
-
-        if np.shape(X)[-1] != np.shape(Y)[0]:
-            raise Exception("Last dimension of X must match first dimension of Y")
-
+        constantsDict["YLEN"] = np.prod(np.shape(Y))
+        constantsDict["LG_WG_SIZE"] = 6 # corresponding to 512 threads per NVIDIA SIMD
+        constantsDict["THREADS_PER_LOCALGROUP"] = (1 << constantsDict["LG_WG_SIZE"])
+        constantsDict["OPS_PER_THREAD"] = 1
         self.dim2index = {
-            "XDIM0": np.shape(X)[0],
-            "XDIM1": np.shape(X)[1],
-            "YDIM0": np.shape(Y)[0],
         }
 
         # device selection and instantiation
-        self.instance_inst = instance
+        self.instance = instance
         self.device = device
         self.constantsDict = constantsDict
-        shader_basename = "sdot"
-        self.dim2index = {"XDIM0": "w", "XDIM1": "n"}
+        shader_basename = "shaders/add"
+
 
         shaderInputBuffers = [
         ]
         shaderInputBuffersNoDebug = []
         debuggableVars = [
-            {"name": "thisAdd", "type": buffType, "dims": ["XDIM0", "XDIM1"]}
         ]
         shaderOutputBuffers = [
-            {"name": "Z", "type": buffType, "dims": ["XDIM0"]},
-            {"name": "X", "type": buffType, "dims": ["XDIM0", "XDIM1"]},
-            {"name": "Y", "type": buffType, "dims": ["YDIM0"]},
+            {"name": "x", "type": buffType, "dims": np.shape(X), "qualifier": "readonly"},
+            {"name": "y", "type": buffType, "dims": np.shape(Y), "qualifier": "readonly"},
+            {"name": "sumOut", "type": buffType, "dims": np.shape(X), "qualifier": "writeonly"},
         ]
 
         # Compute Stage: the only stage
         ComputeShader.__init__(
             self,
-            sourceFilename=os.path.join(here, "sdot.c"),  # can be GLSL or SPIRV
-            parent=self.instance_inst,
+            sourceFilename=os.path.join(here, "shaders/add.c"),  # can be GLSL or SPIRV
+            parent=self.instance,
             constantsDict=self.constantsDict,
             device=self.device,
             name=shader_basename,
@@ -79,7 +72,7 @@ class SDOT(ComputeShader):
             DEBUG=DEBUG,
             dim2index=self.dim2index,
             memProperties=memProperties,
-            workgroupShape=[1, 1, 1],
+            workgroupShape=[int(np.prod(np.shape(X))/(constantsDict["THREADS_PER_LOCALGROUP"]*constantsDict["OPS_PER_THREAD"])), 1, 1],
             compressBuffers=True,
         )
 
@@ -88,7 +81,7 @@ class SDOT(ComputeShader):
         self.run()
         vlen = time.time() - vstart
         print("vlen " + str(vlen))
-        return self.Z.getAsNumpyArray()
+        #return self.sumOut.getAsNumpyArray()
 
 
 import time
@@ -100,7 +93,7 @@ def numpyTest(X, Y):
     print("--- RUNNING NUMPY TEST ---")
     for i in range(10):
         nstart = time.time()
-        nval = np.dot(X, Y)
+        nval = np.add(X,Y)
         nlen = time.time() - nstart
         print("nlen " + str(nlen))
     return nval
@@ -111,7 +104,7 @@ def floatTest(X, Y, instance, expectation):
     print("--- RUNNING FLOAT TEST ---")
     devnum = 0
     device = instance.getDevice(devnum)
-    s = SDOT(
+    s = ADD(
         platformConstantsDict,
         instance=instance,
         device=device,
@@ -122,10 +115,12 @@ def floatTest(X, Y, instance, expectation):
         # | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     )
-    s.X.setBuffer(X)
-    s.Y.setBuffer(Y)
+    s.x.setBuffer(X)
+    s.y.setBuffer(Y)
     for i in range(10):
-        vval = s.debugRun()
+        #vval = s.debugRun()
+        s.debugRun()
+    vval = s.sumOut.getAsNumpyArray()
     print(np.allclose(expectation, vval))
     device.release()
 
@@ -135,7 +130,7 @@ def float64Test(X, Y, instance, expectation):
     print("--- RUNNING FLOAT64_T TEST ---")
     devnum = 0
     device = instance.getDevice(devnum)
-    s = SDOT(
+    s = ADD(
         platformConstantsDict,
         instance=instance,
         device=device,
@@ -147,11 +142,12 @@ def float64Test(X, Y, instance, expectation):
         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     )
-    s.X.setBuffer(X)
-    s.Y.setBuffer(Y)
+    s.x.setBuffer(X)
+    s.y.setBuffer(Y)
     for i in range(10):
-        vval = s.debugRun()
-    print(np.allclose(expectation, vval))
+        #vval = s.debugRun()
+        s.debugRun()
+    #print(np.allclose(expectation, vval))
     device.release()
 
 
@@ -159,6 +155,8 @@ if __name__ == "__main__":
 
     signalLen = 2 ** 13
     wcount = 512
+    signalLen = 2 ** 23
+    wcount = 1
     X = np.random.random((wcount, signalLen))
     Y = np.random.random((signalLen))
 
