@@ -1,0 +1,32 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float64 : require
+#extension GL_ARB_separate_shader_objects : enable
+#define PLATFORM_SIMPLE Default
+#define OPERATION *
+#define PROCTYPE float64_t
+#define YLEN 8388608
+#define LG_WG_SIZE 6
+#define THREADS_PER_LOCALGROUP 64
+#define OPS_PER_THREAD 2
+  // This will be (or has been) replaced by constant definitions
+layout(std430, set = 0, binding = 0) buffer x_buf
+{
+   readonly float64_t x[8388608];
+};
+layout(std430, set = 0, binding = 1) buffer y_buf
+{
+   readonly float64_t y[8388608];
+};
+layout(std430, set = 0, binding = 2) buffer sumOut_buf
+{
+   writeonly float64_t sumOut[8388608];
+};
+ // This will be (or has been) replaced by buffer definitions
+layout (local_size_x = SHADER_COUNT, local_size_y = 1, local_size_z = 1 ) in;
+
+void main() {
+    uint shader_ix = gl_GlobalInvocationID.x;
+    
+    // only write to the storage buffer once
+    sumOut[shader_ix] = x[shader_ix]*y[shader_ix];
+}
