@@ -30,17 +30,10 @@ class PREFIX_SUM(ComputeShader):
     ):
 
         constantsDict["PROCTYPE"] = buffType
-        constantsDict["XDIM0"] = np.shape(X)[0]
-        constantsDict["LG_WG_SIZE"] = 9 # corresponding to 512 threads per NVIDIA SIMD
-        constantsDict["SHADERS_PER_LOCALGROUP"] = (1 << constantsDict["LG_WG_SIZE"])
-        constantsDict["SHADER_COUNT"] = 512
+        constantsDict["LOG2_SHADERS_PER_WORKGROUP"] = 7 # corresponding to 512 threads per NVIDIA SIMD
+        constantsDict["SHADERS_PER_WORKGROUP"] = (1 << constantsDict["LOG2_SHADERS_PER_WORKGROUP"])
         constantsDict["OPS_PER_SHADER"] = 1
         
-        self.dim2index = {
-            "XDIM0": np.shape(X)[0],
-            "SHADER_COUNT": constantsDict["SHADER_COUNT"],
-        }
-
         # device selection and instantiation
         self.instance_inst = instance
         self.device = device
@@ -52,13 +45,13 @@ class PREFIX_SUM(ComputeShader):
         ]
         shaderInputBuffersNoDebug = []
         debuggableVars = [
-            {"name": "thisAdd", "type": buffType, "dims": ["XDIM0", "XDIM1"]}
+            {"name": "thisAdd", "type": buffType, "dims": np.shape(X)}
         ]
         shaderOutputBuffers = [
-            {"name": "inbuf", "type": buffType, "dims": ["XDIM0"]},
-            {"name": "outbuf", "type": buffType, "dims": ["XDIM0"]},
+            {"name": "inbuf", "type": buffType, "dims": np.shape(X), "qualifier": "readonly"},
+            {"name": "outbuf", "type": buffType, "dims": np.shape(X)},
             {"name": "part_counter", "type": "uint", "dims": ["SHADER_COUNT"]},
-            {"name": "localGroup_flag", "type": "uint", "dims": ["SHADER_COUNT"]},
+            {"name": "WORKGROUP_flag", "type": "uint", "dims": ["SHADER_COUNT"]},
             {"name": "aggregate", "type": buffType, "dims": ["SHADER_COUNT"]},
             {"name": "prefix", "type": buffType, "dims": ["SHADER_COUNT"]},
         ]

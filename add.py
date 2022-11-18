@@ -35,7 +35,7 @@ class ARITH(ComputeShader):
         constantsDict["YLEN"] = np.prod(np.shape(Y))
         constantsDict["LG_WG_SIZE"] = 7 # corresponding to 512 threads per NVIDIA SIMD
         constantsDict["THREADS_PER_WORKGROUP"] = (1 << constantsDict["LG_WG_SIZE"])
-        constantsDict["OPS_PER_THREAD"] = 2048
+        constantsDict["OPS_PER_THREAD"] = 1
         self.dim2index = {
         }
 

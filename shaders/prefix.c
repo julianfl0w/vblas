@@ -22,7 +22,7 @@
 #define RELEASE 0, 0
 #endif
 
-#define OPS_PER_LOCALGROUP (THREADS_PER_LOCALGROUP * OPS_PER_Thread)
+#define OPS_PER_WORKGROUP (THREADS_PER_WORKGROUP * OPS_PER_THREAD)
 
 DEFINE_STRING // This will be (or has been) replaced by constant definitions
 layout (local_size_x = LOCAL_X, local_size_y = LOCAL_Y, local_size_z = LOCAL_Z ) in;
@@ -34,10 +34,11 @@ BUFFERS_STRING  // This will be (or has been) replaced by buffer definitions
 #define FLAG_PREFIX_READY 2u
 
 
-shared PROCTYPE sh_threadAggrigate[THREADS_PER_LOCALGROUP];
+shared PROCTYPE sh_threadAggrigate[THREADS_PER_WORKGROUP];
+shared PROCTYPE sh_threadInclusivePrefix[THREADS_PER_WORKGROUP];
 
 
-shared uint sh_localGroup_ix;
+shared uint sh_workGroup_ix;
 shared PROCTYPE sh_prefix;
 shared uint sh_flag;
 
@@ -47,44 +48,85 @@ PROCTYPE salientOperation(PROCTYPE a, PROCTYPE b) {
 
 // assume XSIZE = 512, YSIZE = ZSIZE = 1
 void main() {
-    uint localGroup_ix = gl_WorkGroupID.x;
+    uint workGroup_ix  = gl_WorkGroupID.x;
     uint thread_ix     = gl_LocalInvocationID.x;
     
     VARIABLEDECLARATIONS
-    PROCTYPE threadAggrigate[OPS_PER_Thread];
+    PROCTYPE threadAggrigate[OPS_PER_THREAD];
     
-    /*
-    // Determine localgroup to process by atomic counter (described in Section
-    // 4.4 of prefix sum paper).
-    if (thread_ix == 0) {
-        sh_localGroup_ix = atomicAdd(part_counter[0], 1);
-    }
-    barrier();
-    uint localGroup_ix = sh_localGroup_ix;*/
-    
-    uint start_global_ix = localGroup_ix * OPS_PER_LOCALGROUP + thread_ix * OPS_PER_Thread;
+    uint WORKGROUP_COUNT   = gl_NumWorkGroups.x;
+    uint workGroup_ix      = gl_WorkGroupID.x;
+    uint thread_ix         = gl_LocalInvocationID.x;
+    uint shader_ix         = workGroup_ix*OPS_PER_THREAD;
+    uint workgroupStart_ix = workGroup_ix*OPS_PER_THREAD*THREADS_PER_WORKGROUP;
+    uint thread_start_ix   = workgroupStart_ix + thread_ix;
 
-    // 4.1.1, 4.1.2 unnecessary
+    // My own take on Decoupled Lookback Prefix Scan
+    // https://research.nvidia.com/sites/default/files/pubs/2016-03_Single-pass-Parallel-Prefix/nvr-2016-002.pdf
     
-    // 4.1.3
-    //Compute and record the partition-wide aggregate. Each
-    //processor computes and records its partition-wide
-    //aggregate to the corresponding partition descriptor.
-    
-    threadAggrigate[0] = inbuf[start_global_ix];
+    // 1: compute the prefix scan for this thread, store prefix in local memory
+    // 2: copy the final value to shared memory. execute a barrier and memoryBarrierBuffer
+    // 3: look progressively backwards at other threads. 
+    //     a) while aggrigate unavailable, spin
+    //     b) if aggrigate available, add to our prefix, look back one further. if at 0, we have our prefix and done
+    //     c) if prefix available, add to our values, then done (unless this is thread 0)
     
     // do the Thread work here
-    for (uint i = 1; i < OPS_PER_Thread; i++) {
-        threadAggrigate[i] = salientOperation(threadAggrigate[i - 1], inbuf[start_global_ix + i]);
+    threadAggrigate[0] = inbuf[thread_start_ix];
+    for (uint i = 1; i < OPS_PER_THREAD; i++) {
+        // skip THREADS_PER_WORKGROUP to keep threads coalesced
+        uint readIndex = thread_start_ix + i*THREADS_PER_WORKGROUP;
+        threadAggrigate[i] = salientOperation(threadAggrigate[i - 1], inbuf[readIndex]);
     }
-    // save it to shared memory
-    PROCTYPE thisThreadAgg = threadAggrigate[OPS_PER_Thread - 1];
+    
+    // save aggrigate to shared memory
+    PROCTYPE thisThreadAgg = threadAggrigate[OPS_PER_THREAD - 1];
     sh_threadAggrigate[thread_ix] = thisThreadAgg;
+    // set our flag to AGGRIGATE READY
+    sh_flag[thread_ix] = FLAG_AGGREGATE_READY;
+    
     
     // calculate this thread's inclusive prefix by looking 
     // progressively backwards at aggrigates from previous threads
+    PROCTYPE thisThreadInclusivePrefix = 0;
+    for(uint previousThread = thread_ix-1; previousThread >= 0; previousThread--){
+        // barrier first?
+        barrier();
+        // mbb after?
+        //memoryBarrierBuffer();
+        // wait for something to be ready
+        while(sh_flag[previousThread] == FLAG_NOT_READY){
+            barrier();
+            //memoryBarrierBuffer();
+        }
+        // preferred case. prefix is ready, we add it to our prefix and stop
+        if(sh_flag[previousThread] == FLAG_PREFIX_READY){
+            thisThreadInclusivePrefix += sh_threadInclusivePrefix[previousThread];
+            break;
+        }
+        // also a nice case. previous aggrigate is ready, we add it to our prefix and go back again
+        else{// if(sh_flag[previousThread] == FLAG_AGGREGATE_READY){
+            thisThreadInclusivePrefix += sh_threadAggrigate[previousThread];
+        }
+    }
+    
+    // set our flag to PREFIX READY
+    sh_flag[thread_ix] = FLAG_PREFIX_READY;
     barrier();
-    memoryBarrierBuffer();
+    //memoryBarrierBuffer();
+    
+    // Publish aggregate for this WORKGROUP
+    if (thread_ix == THREADS_PER_WORKGROUP - 1) {
+        aggregate[workGroup_ix] = thisThreadInclusivePrefix + thisThreadAgg;
+        if (workGroup_ix == 0) {
+            prefix[workGroup_ix] = thisThreadAgg;
+        }
+    }
+    
+    // at this point, we have 
+    // a) the prefix scan internal to this thread, 
+    // b) the prefix to this thread internal to this workgroup
+    // we just need c) the prefix to this workgroup
     
     
     // It then executes a memory fence and updates the descriptor’s
@@ -92,19 +134,12 @@ void main() {
     // first partition copies aggregate to the inclusive_prefix
     // field, updates status_flag to P, and skips to Step 6 below.
     
-    localGroup_flag[
+    WORKGROUP_flag[
     barrier();
     memoryBarrierBuffer();
     
-    // Publish aggregate for this localgroup
-    if (thread_ix == THREADS_PER_LOCALGROUP - 1) {
-        aggregate[localGroup_ix] = thisThreadAgg;
-        if (localGroup_ix == 0) {
-            prefix[workGroup_ix] = thisThreadAgg;
-        }
-    }
     
-    for (uint i = 0; i < LG_WG_SIZE; i++) {
+    for (uint i = 0; i < LOG2_SHADERS_PER_WORKGROUP; i++) {
         barrier();
         if (thread_ix >= (1u << i)) {
             PROCTYPE other = sh_threadAggrigate[thread_ix - (1u << i)];
@@ -116,15 +151,15 @@ void main() {
 
     // Write flag with release semantics; this is done portably with a barrier.
     memoryBarrierBuffer();
-    if (thread_ix == THREADS_PER_LOCALGROUP - 1) {
+    if (thread_ix == THREADS_PER_WORKGROUP - 1) {
         uint thisflag = FLAG_AGGREGATE_READY;
-        if (localGroup_ix == 0) {
+        if (workGroup_ix == 0) {
             thisflag = FLAG_PREFIX_READY;
         }
 #ifdef ATOMIC
-        atomicStore(flag[localGroup_ix], thisflag, gl_ScopeDevice, RELEASE);
+        atomicStore(flag[workGroup_ix], thisflag, gl_ScopeDevice, RELEASE);
 #else
-        flag[localGroup_ix] = thisflag;
+        flag[workGroup_ix] = thisflag;
 #endif
     }
 
