@@ -80,87 +80,91 @@ void main() {
     }
     
     // save aggrigate to shared memory
-    PROCTYPE thisThreadAgg = threadAggrigate[OPS_PER_THREAD - 1];
-    sh_threadAggrigate[thread_ix] = thisThreadAgg;
-    // set our flag to AGGRIGATE READY
-    sh_flag[thread_ix] = FLAG_AGGREGATE_READY;
-    
-    
-    // calculate this thread's inclusive prefix by looking 
-    // progressively backwards at aggrigates from previous threads
-    PROCTYPE thisThreadInclusivePrefix = 0;
-    for(uint previousThread = thread_ix-1; previousThread >= 0; previousThread--){
-        // barrier first?
-        barrier();
-        // mbb after?
-        //memoryBarrierBuffer();
-        // wait for something to be ready
-        while(sh_flag[previousThread] == FLAG_NOT_READY){
-            barrier();
-            //memoryBarrierBuffer();
-        }
-        // preferred case. prefix is ready, we add it to our prefix and stop
-        if(sh_flag[previousThread] == FLAG_PREFIX_READY){
-            thisThreadInclusivePrefix += sh_threadInclusivePrefix[previousThread];
-            break;
-        }
-        // also a nice case. previous aggrigate is ready, we add it to our prefix and go back again
-        else{// if(sh_flag[previousThread] == FLAG_AGGREGATE_READY){
-            thisThreadInclusivePrefix += sh_threadAggrigate[previousThread];
+    // if this is not 0th thread
+    if(thread_ix != 0){
+        PROCTYPE thisThreadAgg = threadAggrigate[OPS_PER_THREAD - 1];
+        atomicStore(sh_threadAggrigate[thread_ix], thisThreadAgg, gl_ScopeDevice, RELEASE);
+        // set our flag to AGGRIGATE READY
+        atomicStore(sh_flag[thread_ix], FLAG_AGGREGATE_READY, gl_ScopeDevice, RELEASE);
+        
+        // calculate this thread's inclusive prefix by looking 
+        // progressively backwards at aggrigates from previous threads
+        PROCTYPE thisThreadInclusivePrefix = thisThreadAgg;
+        for(uint previousThread = thread_ix-1; previousThread >= 0; previousThread--){
+            // wait for something to be ready
+            uint previousThreadFlag
+            while(1){
+                previousThreadFlag = atomicLoad(sh_flag[previousThread], gl_ScopeDevice, ACQUIRE);
+                if(previousThreadFlag != FLAG_NOT_READY)
+                    break;
+            }
+            // preferred case. prefix is ready, we add it to our prefix and stop
+            if(previousThreadFlag == FLAG_PREFIX_READY){
+                thisThreadInclusivePrefix += atomicLoad(sh_threadInclusivePrefix[previousThread], gl_ScopeDevice, ACQUIRE);
+                break;
+            }
+            // also a nice case. previous aggrigate is ready, we add it to our prefix and go back again
+            else{ // FLAG_AGGREGATE_READY
+                thisThreadInclusivePrefix += atomicLoad(sh_threadAggrigate[previousThread], gl_ScopeDevice, ACQUIRE);
+            }
         }
     }
     
+    
+    // save prefix to shared memory
+    atomicStore(sh_threadAggrigate[thread_ix], thisThreadInclusivePrefix, gl_ScopeDevice, RELEASE);
     // set our flag to PREFIX READY
-    sh_flag[thread_ix] = FLAG_PREFIX_READY;
-    barrier();
-    //memoryBarrierBuffer();
-    
-    // Publish aggregate for this WORKGROUP
-    if (thread_ix == THREADS_PER_WORKGROUP - 1) {
-        aggregate[workGroup_ix] = thisThreadInclusivePrefix + thisThreadAgg;
-        if (workGroup_ix == 0) {
-            prefix[workGroup_ix] = thisThreadAgg;
-        }
-    }
-    
+    atomicStore(sh_flag[thread_ix], FLAG_PREFIX_READY, gl_ScopeDevice, RELEASE);
+        
     // at this point, we have 
     // a) the prefix scan internal to this thread, 
     // b) the prefix to this thread internal to this workgroup
     // we just need c) the prefix to this workgroup
     
-    
-    // It then executes a memory fence and updates the descriptor’s
-    // status_flag to A. Furthermore, the processor owning the
-    // first partition copies aggregate to the inclusive_prefix
-    // field, updates status_flag to P, and skips to Step 6 below.
-    
-    WORKGROUP_flag[
-    barrier();
-    memoryBarrierBuffer();
-    
-    
-    for (uint i = 0; i < LOG2_SHADERS_PER_WORKGROUP; i++) {
-        barrier();
-        if (thread_ix >= (1u << i)) {
-            PROCTYPE other = sh_threadAggrigate[thread_ix - (1u << i)];
-            thisThreadAgg = other + thisThreadAgg;
-        }
-        barrier();
-        sh_threadAggrigate[thread_ix] = thisThreadAgg;
-    }
-
-    // Write flag with release semantics; this is done portably with a barrier.
-    memoryBarrierBuffer();
+    // Now only the final thread is active. 
     if (thread_ix == THREADS_PER_WORKGROUP - 1) {
-        uint thisflag = FLAG_AGGREGATE_READY;
-        if (workGroup_ix == 0) {
-            thisflag = FLAG_PREFIX_READY;
-        }
-#ifdef ATOMIC
-        atomicStore(flag[workGroup_ix], thisflag, gl_ScopeDevice, RELEASE);
-#else
-        flag[workGroup_ix] = thisflag;
-#endif
-    }
+        //Publish aggregate for this WORKGROUP
+        atomicStore(aggregate[workGroup_ix], thisThreadInclusivePrefix, gl_ScopeDevice, RELEASE);
+        // set our flag to AGGRIGATE READY
+        atomicStore(flag[workGroup_ix], FLAG_AGGREGATE_READY, gl_ScopeDevice, RELEASE);
+        
+        // start looking at previous workgroup aggrigates
+        // this might look familiar
+        // save aggrigate to shared memory
+        // if this is not 0th thread
+        if(workGroup_ix != 0){
+            PROCTYPE thisThreadAgg = threadAggrigate[OPS_PER_THREAD - 1];
+            atomicStore(sh_threadAggrigate[thread_ix], thisThreadAgg, gl_ScopeDevice, RELEASE);
+            // set our flag to AGGRIGATE READY
+            atomicStore(sh_flag[thread_ix], FLAG_AGGREGATE_READY, gl_ScopeDevice, RELEASE);
 
+            // calculate this thread's inclusive prefix by looking 
+            // progressively backwards at aggrigates from previous threads
+            PROCTYPE thisThreadInclusivePrefix = thisThreadAgg;
+            for(uint previousThread = thread_ix-1; previousThread >= 0; previousThread--){
+                // wait for something to be ready
+                uint previousThreadFlag
+                while(1){
+                    previousThreadFlag = atomicLoad(sh_flag[previousThread], gl_ScopeDevice, ACQUIRE);
+                    if(previousThreadFlag != FLAG_NOT_READY)
+                        break;
+                }
+                // preferred case. prefix is ready, we add it to our prefix and stop
+                if(previousThreadFlag == FLAG_PREFIX_READY){
+                    thisThreadInclusivePrefix += atomicLoad(sh_threadInclusivePrefix[previousThread], gl_ScopeDevice, ACQUIRE);
+                    break;
+                }
+                // also a nice case. previous aggrigate is ready, we add it to our prefix and go back again
+                else{ // FLAG_AGGREGATE_READY
+                    thisThreadInclusivePrefix += atomicLoad(sh_threadAggrigate[previousThread], gl_ScopeDevice, ACQUIRE);
+                }
+            }
+        }
+        
+        // save prefix to shared memory
+        atomicStore(sh_threadAggrigate[thread_ix], thisThreadInclusivePrefix, gl_ScopeDevice, RELEASE);
+        // set our flag to PREFIX READY
+        atomicStore(sh_flag[thread_ix], FLAG_PREFIX_READY, gl_ScopeDevice, RELEASE);
+
+    }
 }
