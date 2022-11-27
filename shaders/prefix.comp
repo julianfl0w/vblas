@@ -1,200 +1,140 @@
-// SPDX-License-Identifier: Apache-2.0 OR MIT OR Unlicense
-
-// A prefix sum.
-//
-// This test builds in three configurations. The default is a
-// compatibility mode, essentially plain GLSL. With ATOMIC set, the
-// flag loads and stores are atomic operations, but uses barriers.
-// With both ATOMIC and VKMM set, it uses acquire/release semantics
-// instead of barriers.
+// From https://github.com/linebender/piet-gpu/blob/prefix/piet-gpu-hal/examples/shader/prefix.comp
+// See https://research.nvidia.com/sites/default/files/pubs/2016-03_Single-pass-Parallel-Prefix/nvr-2016-002.pdf
 
 #version 450
-
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_KHR_memory_scope_semantics : enable
-#extension GL_EXT_shader_atomic_float : require 
-#define ATOMIC 
+// #extension VK_EXT_shader_atomic_float : require NOT WORKING
 
-#ifdef VKMM
-#pragma use_vulkan_memory_model
-#define ACQUIRE gl_StorageSemanticsBuffer, gl_SemanticsAcquire
-#define RELEASE gl_StorageSemanticsBuffer, gl_SemanticsRelease
-#else
-#define ACQUIRE 0, 0
-#define RELEASE 0, 0
-#endif
-
-#define OPS_PER_WORKGROUP (THREADS_PER_WORKGROUP * OPS_PER_THREAD)
+// One workgroup processes workgroup size * ELEMENTS_PER_WORKGROUP elements.
+#define ELEMENTS_PER_WORKGROUP 16
 
 #define PLATFORM_SIMPLE Default
+#define CAST_PRECISION 100000
 #define PROCTYPE float
 #define LOG2_THREADS_PER_WORKGROUP 7
 #define THREADS_PER_WORKGROUP 128
 #define OPS_PER_THREAD 1
-#define WORKGROUP_COUNT 1
-#define THREADS_PER_DISPATCH 128
- // This will be (or has been) replaced by constant definitions
-layout (local_size_x = THREADS_PER_WORKGROUP, local_size_y = 1, local_size_z = 1 ) in;
+#define WORKGROUP_COUNT 8
+#define THREADS_PER_DISPATCH 1024
+// This will be (or has been) replaced by constant definitions
 layout(std430, set = 0, binding = 0) buffer inbuf_buf
 {
-   readonly float inbuf[128];
+   readonly float inbuf[1024];
 };
 layout(std430, set = 0, binding = 1) buffer outbuf_buf
 {
-   writeonly float outbuf[128];
+   writeonly float outbuf[1024];
 };
-layout(std430, set = 0, binding = 2) buffer WORKGROUP_flag_buf
+layout(std430, set = 0, binding = 2) buffer work_buf_buf
 {
-    uint WORKGROUP_flag[4];
+    uint work_buf[128];
 };
-layout(std430, set = 0, binding = 3) buffer aggregate_buf
-{
-    float aggregate[1];
-};
-layout(std430, set = 0, binding = 4) buffer prefix_buf
-{
-    float prefix[1];
-};
-  // This will be (or has been) replaced by buffer definitions
+// This will be (or has been) replaced by buffer definitions
     
-// These correspond to X, A, P respectively in the prefix sum paper.
-#define FLAG_NOT_READY 0u
-#define FLAG_AGGREGATE_READY 1u
-#define FLAG_PREFIX_READY 2u
+
+// work_buf[0] is the tile id
+// work_buf[i * 4 + 1] is the flag for tile i
+// work_buf[i * 4 + 2] is the aggregate for tile i
+// work_buf[i * 4 + 3] is the prefix for tile i
 
 
-shared PROCTYPE sh_threadAggrigate[THREADS_PER_WORKGROUP];
-shared PROCTYPE sh_threadInclusivePrefix[THREADS_PER_WORKGROUP];
+// These correspond to X, A, P respectively in the paper.
+#define FLAG_NOT_READY 0
+#define FLAG_AGGREGATE_READY 1
+#define FLAG_PREFIX_READY 2
 
+shared uint shared_tile;
+shared uint shared_prefix;
+// Note: the subgroup size and other dimensions are hard-coded.
+// TODO: make it more adaptive.
+shared PROCTYPE chunks[32];
 
-shared uint sh_thread_ix;
-shared PROCTYPE sh_prefix;
-shared uint sh_threadFlag[THREADS_PER_WORKGROUP];
-
-PROCTYPE salientOperation(PROCTYPE a, PROCTYPE b) {
-    return (a + b);
-}
-
-// assume XSIZE = 512, YSIZE = ZSIZE = 1
 void main() {
     
-    
-    PROCTYPE threadAggrigate[OPS_PER_THREAD];
-    
-    uint workGroup_ix      = gl_WorkGroupID.x;
-    //uint thread_ix         = gl_LocalInvocationID.x;
-    uint thread_ix = atomicAdd(sh_thread_ix, 1);
-    uint shader_ix         = workGroup_ix*OPS_PER_THREAD;
-    uint workgroupStart_ix = workGroup_ix*OPS_PER_THREAD*THREADS_PER_WORKGROUP;
-    uint thread_start_ix   = workgroupStart_ix + thread_ix;
-
-    // My own take on Decoupled Lookback Prefix Scan
-    // https://research.nvidia.com/sites/default/files/pubs/2016-03_Single-pass-Parallel-Prefix/nvr-2016-002.pdf
-    
-    // 1: compute the prefix scan for this thread, store prefix in local memory
-    // 2: copy the final value to shared memory. execute a barrier and memoryBarrierBuffer
-    // 3: look progressively backwards at other threads. 
-    //     a) while aggrigate unavailable, spin
-    //     b) if aggrigate available, add to our prefix, look back one further. if at 0, we have our prefix and done
-    //     c) if prefix available, add to our values, then done (unless this is thread 0)
-    
-    // do the Thread work here
-    threadAggrigate[0] = inbuf[thread_start_ix];
-    for (uint i = 1; i < OPS_PER_THREAD; i++) {
-        // skip THREADS_PER_WORKGROUP to keep threads coalesced
-        uint readIndex = thread_start_ix + i*THREADS_PER_WORKGROUP;
-        threadAggrigate[i] = salientOperation(threadAggrigate[i - 1], inbuf[readIndex]);
+    uint local_ix = gl_LocalInvocationID.x;
+    // Determine tile to process by atomic counter (implement idea from
+    // section 4.4 in the paper).
+    if (local_ix == 0) {
+        shared_tile = atomicAdd(work_buf[0], 1);
     }
-    
-    PROCTYPE thisThreadInclusivePrefix;
-    
-    // save aggrigate to shared memory
-    PROCTYPE thisThreadAgg = threadAggrigate[OPS_PER_THREAD - 1];
-    atomicStore(sh_threadAggrigate[thread_ix], thisThreadAgg, gl_ScopeDevice, RELEASE);
-    // set our flag to AGGRIGATE READY
-    atomicStore(sh_threadFlag[thread_ix], FLAG_AGGREGATE_READY, gl_ScopeDevice, RELEASE);
+    barrier();
+    uint my_tile = shared_tile;
+    uint mem_base = my_tile * 16384;
+    PROCTYPE aggregates[ELEMENTS_PER_WORKGROUP];
 
-    // calculate this thread's inclusive prefix by looking 
-    // progressively backwards at aggrigates from previous threads
-    thisThreadInclusivePrefix = thisThreadAgg;
-    for(uint previousThread = thread_ix-1; previousThread >= 0; previousThread--){
-        // wait for something to be ready
-        uint previousThreadFlag;
-        while(true){
-            barrier();
-            previousThreadFlag = atomicLoad(sh_threadFlag[previousThread], gl_ScopeDevice, ACQUIRE);
-            if(previousThreadFlag != FLAG_NOT_READY)
-                break;
-        }
-        
-
-        // preferred case. prefix is ready, we add it to our prefix and stop
-        if(previousThreadFlag == FLAG_PREFIX_READY){
-            thisThreadInclusivePrefix += atomicLoad(sh_threadInclusivePrefix[previousThread], gl_ScopeDevice, ACQUIRE);
-            break;
-        }
-        // also a nice case. previous aggrigate is ready, we add it to our prefix and go back again
-        else{ // FLAG_AGGREGATE_READY
-            thisThreadInclusivePrefix += atomicLoad(sh_threadAggrigate[previousThread], gl_ScopeDevice, ACQUIRE);
-        }
+    // Interleave reading of data, computing row prefix sums, and aggregate
+    // (step 3 of paper).
+    PROCTYPE total = 0;
+    for (uint i = 0; i < ELEMENTS_PER_WORKGROUP; i++) {
+        uint ix = (local_ix & 0x3e0) * ELEMENTS_PER_WORKGROUP + i * 32 + (local_ix & 0x1f);
+        PROCTYPE data = inbuf[mem_base + ix];
+        PROCTYPE row = subgroupInclusiveAdd(data);
+        total += row;
+        aggregates[i] = row;
     }
-    
-    // save prefix to shared memory
-    atomicStore(sh_threadAggrigate[thread_ix], thisThreadInclusivePrefix, gl_ScopeDevice, RELEASE);
-    // set our flag to PREFIX READY
-    atomicStore(sh_threadFlag[thread_ix], FLAG_PREFIX_READY, gl_ScopeDevice, RELEASE);
-    
-    // remove
-    return;
-    
-    // at this point, we have 
-    // a) the prefix scan internal to this thread, 
-    // b) the prefix to this thread internal to this workgroup
-    // we just need c) the prefix to this workgroup
-    
-    // Now only the final thread is active. 
-    if (thread_ix == THREADS_PER_WORKGROUP - 1) {
-        //Publish aggregate for this WORKGROUP
-        atomicStore(aggregate[workGroup_ix], thisThreadInclusivePrefix, gl_ScopeDevice, RELEASE);
-        // set our flag to AGGRIGATE READY
-        atomicStore(WORKGROUP_flag[workGroup_ix], FLAG_AGGREGATE_READY, gl_ScopeDevice, RELEASE);
-        
-        // start looking at previous workgroup aggrigates
-        // this might look familiar
-        // save aggrigate to shared memory
-        // if this is not 0th thread
-        if(workGroup_ix != 0){
-            PROCTYPE thisThreadAgg = threadAggrigate[OPS_PER_THREAD - 1];
-            atomicStore(sh_threadAggrigate[thread_ix], thisThreadAgg, gl_ScopeDevice, RELEASE);
-            // set our flag to AGGRIGATE READY
-            atomicStore(sh_threadFlag[thread_ix], FLAG_AGGREGATE_READY, gl_ScopeDevice, RELEASE);
+    if (gl_SubgroupInvocationID == 31) {
+        chunks[local_ix >> 5] = total;
+    }
 
-            // calculate this thread's inclusive prefix by looking 
-            // progressively backwards at aggrigates from previous threads
-            PROCTYPE thisThreadInclusivePrefix = thisThreadAgg;
-            for(uint previousThread = thread_ix-1; previousThread >= 0; previousThread--){
-                // wait for something to be ready
-                uint previousThreadFlag;
-                while(true){
-                    previousThreadFlag = atomicLoad(sh_threadFlag[previousThread], gl_ScopeDevice, ACQUIRE);
-                    if(previousThreadFlag != FLAG_NOT_READY)
-                        break;
-                }
-                // preferred case. prefix is ready, we add it to our prefix and stop
-                if(previousThreadFlag == FLAG_PREFIX_READY){
-                    thisThreadInclusivePrefix += atomicLoad(sh_threadInclusivePrefix[previousThread], gl_ScopeDevice, ACQUIRE);
+    barrier();
+    if (local_ix < 32) {
+        PROCTYPE chunk = chunks[gl_SubgroupInvocationID];
+        total = subgroupInclusiveAdd(chunk);
+        chunks[gl_SubgroupInvocationID] = total;
+    }
+
+    uint exclusive_prefix = 0;
+    if (local_ix == 31) {
+        atomicStore(work_buf[my_tile * 4 + 2], int(total*CAST_PRECISION), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelaxed);
+        uint flag = FLAG_AGGREGATE_READY;
+        if (my_tile == 0) {
+            atomicStore(work_buf[my_tile * 4 + 3], int(total*CAST_PRECISION), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelaxed);
+            flag = FLAG_PREFIX_READY;
+        }
+        atomicStore(work_buf[my_tile * 4 + 1], flag, gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
+        if (my_tile != 0) {
+            // step 4: decoupled lookback
+            uint look_back_ix = my_tile - 1;
+            while (true) {
+                flag = atomicLoad(work_buf[look_back_ix * 4 + 1], gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsAcquire);
+                if (flag == FLAG_PREFIX_READY) {
+                    uint their_prefix = atomicLoad(work_buf[look_back_ix * 4 + 3], gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelaxed);
+                    exclusive_prefix = their_prefix + exclusive_prefix;
                     break;
+                } else if (flag == FLAG_AGGREGATE_READY) {
+                    uint their_agg = atomicLoad(work_buf[look_back_ix * 4 + 2], gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelaxed);
+                    exclusive_prefix = their_agg + exclusive_prefix;
+                    look_back_ix--;
                 }
-                // also a nice case. previous aggrigate is ready, we add it to our prefix and go back again
-                else{ // FLAG_AGGREGATE_READY
-                    thisThreadInclusivePrefix += atomicLoad(sh_threadAggrigate[previousThread], gl_ScopeDevice, ACQUIRE);
-                }
+                // else spin
             }
-        }
-        
-        // save prefix to shared memory
-        atomicStore(sh_threadAggrigate[thread_ix], thisThreadInclusivePrefix, gl_ScopeDevice, RELEASE);
-        // set our flag to PREFIX READY
-        atomicStore(sh_threadFlag[thread_ix], FLAG_PREFIX_READY, gl_ScopeDevice, RELEASE);
 
+            // step 5: compute inclusive prefix
+            PROCTYPE inclusive_prefix = exclusive_prefix + total;
+            shared_prefix = exclusive_prefix;
+            atomicStore(work_buf[my_tile * 4 + 3], int(inclusive_prefix*CAST_PRECISION), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelaxed);
+            flag = FLAG_PREFIX_READY;
+            atomicStore(work_buf[my_tile * 4 + 1], flag, gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
+        }
+    }
+    PROCTYPE prefix = 0;
+    barrier();
+    if (my_tile != 0) {
+        prefix = shared_prefix;
+    }
+
+    // step 6: perform partition-wide scan
+    if (local_ix >> 5 > 0) {
+        prefix += chunks[(local_ix >> 5) - 1];
+    }
+    for (uint i = 0; i < ELEMENTS_PER_WORKGROUP; i++) {
+        uint ix = (local_ix & 0x3e0) * ELEMENTS_PER_WORKGROUP + i * 32 + (local_ix & 0x1f);
+        PROCTYPE agg = aggregates[i];
+        //outbuf[mem_base + ix] = prefix + agg;
+        outbuf[mem_base + ix] = 1;
+        prefix += subgroupBroadcast(agg, 31);
     }
 }

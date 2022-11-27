@@ -29,6 +29,7 @@ class PREFIX_SUM(ComputeShader):
         | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
     ):
 
+        constantsDict["CAST_PRECISION"] = 100000
         constantsDict["PROCTYPE"] = buffType
         constantsDict["LOG2_THREADS_PER_WORKGROUP"] = 7
         constantsDict["THREADS_PER_WORKGROUP"] = (
@@ -77,31 +78,19 @@ class PREFIX_SUM(ComputeShader):
                 dimensionVals=np.shape(X),
                 memProperties=memProperties,
             ),
+            
+            # work_buf[0] is the tile id
+            # work_buf[i * 4 + 1] is the flag for tile i
+            # work_buf[i * 4 + 2] is the aggregate for tile i
+            # work_buf[i * 4 + 3] is the prefix for tile i
+
             StorageBuffer(
                 device=self.device,
-                name="WORKGROUP_flag",
+                name="work_buf",
                 memtype="uint",
                 qualifier="",
-                dimensionNames=["WORKGROUP_COUNT"],
-                dimensionVals=[constantsDict["WORKGROUP_COUNT"]],
-                memProperties=memProperties,
-            ),
-            StorageBuffer(
-                device=self.device,
-                name="aggregate",
-                memtype=buffType,
-                qualifier="",
-                dimensionNames=["WORKGROUP_COUNT"],
-                dimensionVals=[constantsDict["WORKGROUP_COUNT"]],
-                memProperties=memProperties,
-            ),
-            StorageBuffer(
-                device=self.device,
-                name="prefix",
-                memtype=buffType,
-                qualifier="",
-                dimensionNames=["WORKGROUP_COUNT"],
-                dimensionVals=[constantsDict["WORKGROUP_COUNT"]],
+                dimensionNames=["??"],
+                dimensionVals=[constantsDict["WORKGROUP_COUNT"]*4],
                 memProperties=memProperties,
             ),
         ]
@@ -137,15 +126,11 @@ class PREFIX_SUM(ComputeShader):
         )
 
     def debugRun(self):
-        self.aggregate.zeroInitialize()
-        self.prefix.zeroInitialize()
-        self.flag.zeroInitialize()
-        self.part_counter.zeroInitialize()
         vstart = time.time()
         self.run()
         vlen = time.time() - vstart
         print("vlen " + str(vlen))
-        return self.Z.getAsNumpyArray()
+        return self.outbuf.getAsNumpyArray()
 
 
 import time
@@ -181,7 +166,11 @@ def floatTest(X, instance, expectation):
     s.inbuf.setBuffer(X)
     for i in range(10):
         vval = s.debugRun()
-    print(np.allclose(expectation, vval))
+        
+    print(expectation)
+    print(vval)
+    print(np.sum(vval))
+    print(np.allclose(expectation, vval/s.constantsDict["CAST_PRECISION"]))
     device.release()
 
 
@@ -200,17 +189,18 @@ def float64Test(X, instance, expectation):
     s.inbuf.setBuffer(X)
     for i in range(10):
         vval = s.debugRun()
-    print(np.allclose(expectation, vval))
+    print(vval)
+    print(np.allclose(expectation, vval/s.constantsDict["CAST_PRECISION"]))
     device.release()
 
 
 if __name__ == "__main__":
 
-    signalLen = 128
-    X = np.random.random((signalLen))
+    signalLen = 1024
+    X = np.arange(signalLen)
 
     # begin GPU test
     instance = Instance(verbose=False)
     nval = numpyTest(X)
     floatTest(X, instance, expectation=nval)
-    float64Test(X, instance, expectation=nval)
+    #float64Test(X, instance, expectation=nval)
