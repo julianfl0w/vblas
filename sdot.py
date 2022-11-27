@@ -51,8 +51,7 @@ class SDOT(ComputeShader):
         shader_basename = "sdot"
         self.dim2index = {"XDIM0": "w", "XDIM1": "n"}
 
-        shaderInputBuffers = [
-        ]
+        shaderInputBuffers = []
         shaderInputBuffersNoDebug = []
         debuggableVars = [
             {"name": "thisAdd", "type": buffType, "dims": ["XDIM0", "XDIM1"]}

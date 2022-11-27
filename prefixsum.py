@@ -30,49 +30,109 @@ class PREFIX_SUM(ComputeShader):
     ):
 
         constantsDict["PROCTYPE"] = buffType
-        constantsDict["LOG2_SHADERS_PER_WORKGROUP"] = 7 # corresponding to 512 threads per NVIDIA SIMD
-        constantsDict["SHADERS_PER_WORKGROUP"] = (1 << constantsDict["LOG2_SHADERS_PER_WORKGROUP"])
-        constantsDict["OPS_PER_SHADER"] = 1
-        
+        constantsDict["LOG2_THREADS_PER_WORKGROUP"] = 7
+        constantsDict["THREADS_PER_WORKGROUP"] = (
+            1 << constantsDict["LOG2_THREADS_PER_WORKGROUP"]
+        )
+        constantsDict["OPS_PER_THREAD"] = 1
+        constantsDict["WORKGROUP_COUNT"] = int(
+            np.prod(np.shape(X))
+            / (constantsDict["THREADS_PER_WORKGROUP"] * constantsDict["OPS_PER_THREAD"])
+        )
+        print(constantsDict["WORKGROUP_COUNT"])
+        constantsDict["THREADS_PER_DISPATCH"] = (
+            constantsDict["THREADS_PER_WORKGROUP"] * constantsDict["WORKGROUP_COUNT"]
+        )
+
         # device selection and instantiation
         self.instance_inst = instance
         self.device = device
         self.constantsDict = constantsDict
         shader_basename = "shaders/prefix"
+        self.dim2index = {}
 
+        memProperties = (
+            0
+            | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        )
 
-        shaderInputBuffers = [
+        buffers = [
+            StorageBuffer(
+                device=self.device,
+                name="inbuf",
+                memtype=buffType,
+                qualifier="readonly",
+                dimensionNames=np.shape(X),
+                dimensionVals=np.shape(X),
+                memProperties=memProperties,
+            ),
+            StorageBuffer(
+                device=self.device,
+                name="outbuf",
+                memtype=buffType,
+                qualifier="writeonly",
+                dimensionNames=np.shape(X),
+                dimensionVals=np.shape(X),
+                memProperties=memProperties,
+            ),
+            StorageBuffer(
+                device=self.device,
+                name="WORKGROUP_flag",
+                memtype="uint",
+                qualifier="",
+                dimensionNames=["WORKGROUP_COUNT"],
+                dimensionVals=[constantsDict["WORKGROUP_COUNT"]],
+                memProperties=memProperties,
+            ),
+            StorageBuffer(
+                device=self.device,
+                name="aggregate",
+                memtype=buffType,
+                qualifier="",
+                dimensionNames=["WORKGROUP_COUNT"],
+                dimensionVals=[constantsDict["WORKGROUP_COUNT"]],
+                memProperties=memProperties,
+            ),
+            StorageBuffer(
+                device=self.device,
+                name="prefix",
+                memtype=buffType,
+                qualifier="",
+                dimensionNames=["WORKGROUP_COUNT"],
+                dimensionVals=[constantsDict["WORKGROUP_COUNT"]],
+                memProperties=memProperties,
+            ),
         ]
-        shaderInputBuffersNoDebug = []
-        debuggableVars = [
-            {"name": "thisAdd", "type": buffType, "dims": np.shape(X)}
-        ]
-        shaderOutputBuffers = [
-            {"name": "inbuf", "type": buffType, "dims": np.shape(X), "qualifier": "readonly"},
-            {"name": "outbuf", "type": buffType, "dims": np.shape(X)},
-            {"name": "part_counter", "type": "uint", "dims": ["SHADER_COUNT"]},
-            {"name": "WORKGROUP_flag", "type": "uint", "dims": ["SHADER_COUNT"]},
-            {"name": "aggregate", "type": buffType, "dims": ["SHADER_COUNT"]},
-            {"name": "prefix", "type": buffType, "dims": ["SHADER_COUNT"]},
-        ]
+
+        if DEBUG:
+            buffers += [
+                DebugBuffer(
+                    device=self.device,
+                    name="thisAdd",
+                    dimensionNames=np.shape(X),
+                    dimensionVals=np.shape(X),
+                    memProperties=memProperties,
+                )
+            ]
 
         # Compute Stage: the only stage
         ComputeShader.__init__(
             self,
-            sourceFilename=os.path.join(here, "shaders/prefix.c"),  # can be GLSL or SPIRV
+            sourceFilename=os.path.join(
+                here, "shaders/prefix.c"
+            ),  # can be GLSL or SPIRV
             parent=self.instance_inst,
             constantsDict=self.constantsDict,
             device=self.device,
             name=shader_basename,
             stage=VK_SHADER_STAGE_COMPUTE_BIT,
-            shaderInputBuffers=shaderInputBuffers,
-            shaderInputBuffersNoDebug=shaderInputBuffersNoDebug,
-            debuggableVars=debuggableVars,
-            shaderOutputBuffers=shaderOutputBuffers,
+            buffers=buffers,
             DEBUG=DEBUG,
             dim2index=self.dim2index,
             memProperties=memProperties,
-            workgroupShape=[1, 1, 1],
+            workgroupShape=[constantsDict["WORKGROUP_COUNT"], 1, 1],
             compressBuffers=True,
         )
 
@@ -136,10 +196,6 @@ def float64Test(X, instance, expectation):
         device=device,
         X=X,
         buffType="float64_t",
-        memProperties=0
-        | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-        | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     )
     s.inbuf.setBuffer(X)
     for i in range(10):
@@ -150,10 +206,8 @@ def float64Test(X, instance, expectation):
 
 if __name__ == "__main__":
 
-    signalLen = 2 ** 13
-    wcount = 512
-    X = np.random.random((wcount, signalLen))
-    Y = np.random.random((signalLen))
+    signalLen = 128
+    X = np.random.random((signalLen))
 
     # begin GPU test
     instance = Instance(verbose=False)

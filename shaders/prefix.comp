@@ -25,9 +25,36 @@
 
 #define OPS_PER_WORKGROUP (THREADS_PER_WORKGROUP * OPS_PER_THREAD)
 
-DEFINE_STRING // This will be (or has been) replaced by constant definitions
+#define PLATFORM_SIMPLE Default
+#define PROCTYPE float
+#define LOG2_THREADS_PER_WORKGROUP 7
+#define THREADS_PER_WORKGROUP 128
+#define OPS_PER_THREAD 1
+#define WORKGROUP_COUNT 1
+#define THREADS_PER_DISPATCH 128
+ // This will be (or has been) replaced by constant definitions
 layout (local_size_x = THREADS_PER_WORKGROUP, local_size_y = 1, local_size_z = 1 ) in;
-BUFFERS_STRING  // This will be (or has been) replaced by buffer definitions
+layout(std430, set = 0, binding = 0) buffer inbuf_buf
+{
+   readonly float inbuf[128];
+};
+layout(std430, set = 0, binding = 1) buffer outbuf_buf
+{
+   writeonly float outbuf[128];
+};
+layout(std430, set = 0, binding = 2) buffer WORKGROUP_flag_buf
+{
+    uint WORKGROUP_flag[4];
+};
+layout(std430, set = 0, binding = 3) buffer aggregate_buf
+{
+    float aggregate[1];
+};
+layout(std430, set = 0, binding = 4) buffer prefix_buf
+{
+    float prefix[1];
+};
+  // This will be (or has been) replaced by buffer definitions
     
 // These correspond to X, A, P respectively in the prefix sum paper.
 #define FLAG_NOT_READY 0u
@@ -50,22 +77,16 @@ PROCTYPE salientOperation(PROCTYPE a, PROCTYPE b) {
 // assume XSIZE = 512, YSIZE = ZSIZE = 1
 void main() {
     
-    VARIABLEDECLARATIONS
+    
     PROCTYPE threadAggrigate[OPS_PER_THREAD];
     
     uint workGroup_ix      = gl_WorkGroupID.x;
     //uint thread_ix         = gl_LocalInvocationID.x;
-    uint thread_ix         = atomicAdd(sh_thread_ix, 1);
+    uint thread_ix = atomicAdd(sh_thread_ix, 1);
+    uint shader_ix         = workGroup_ix*OPS_PER_THREAD;
     uint workgroupStart_ix = workGroup_ix*OPS_PER_THREAD*THREADS_PER_WORKGROUP;
     uint thread_start_ix   = workgroupStart_ix + thread_ix;
 
-    
-    uint subgroupSize = gl_SubgroupSize; // – size of the subgroup – matches the API property
-    uint subgroupInvocationID = gl_SubgroupInvocationID; //ID of the invocation within the subgroup, [0..gl_SubgroupSize)
-    //gl_NumSubgroups – number of subgroups in local workgroup
-    //gl_SubgroupID – ID of subgroup within local workgroup, [0..gl_NumSubgroups)
-    
-    
     // My own take on Decoupled Lookback Prefix Scan
     // https://research.nvidia.com/sites/default/files/pubs/2016-03_Single-pass-Parallel-Prefix/nvr-2016-002.pdf
     
